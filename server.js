@@ -101,7 +101,6 @@ app.post('/register', async (req, res) => {
 
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
-  console.log("djkcnkdjcc")
   const user = await db('users').where({ username }).first();
   if (user && (await bcrypt.compare(password, user.password))) {
     const token = jwt.sign(

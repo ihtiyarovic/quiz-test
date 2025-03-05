@@ -1,5 +1,5 @@
 {
-  "proxy": "http://localhost:5000/",
+  "proxy": "http://localhost:5000",
   "name": "teacher-website-frontend",
   "version": "1.0.0",
   "main": "index.js",

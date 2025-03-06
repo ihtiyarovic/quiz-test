@@ -17,7 +17,7 @@ const db = knex({
   connection: {
     connectionString: process.env.DATABASE_URL, // Railway provides this automatically
     ssl: {
-      rejectUnauthorized: false, // Railway handles SSL; disable strict checking for simplicity (adjust for production)
+      rejectUnauthorized: false, // Railway handles SSL; disable strict checking for simplicity
     },
   },
 });
@@ -232,4 +232,51 @@ app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), a
           .where({ 'answers.user_id': pupil.id })
           .select('answers.selected_option', 'questions.correct_answer');
         const correctAnswers = answers.filter(
-          (ans
+          (ans) => ans.selected_option === ans.correct_answer
+        ).length;
+        const incorrectAnswers = answers.length - correctAnswers;
+        return { id: pupil.id, username: pupil.username, correctAnswers, incorrectAnswers };
+      })
+    );
+
+    if (req.user.role === 'pupil') {
+      const pupilStats = pupilStatistics.find(stat => stat.username === req.user.username) || { correctAnswers: 0, incorrectAnswers: 0 };
+      res.json({ totalPupils: 1, totalTeachers: 0, pupilStatistics: [pupilStats] });
+    } else {
+      res.json({ totalPupils, totalTeachers, pupilStatistics });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+app.post('/users', authenticate, async (req, res) => {
+  const { username, password, role } = req.body;
+
+  if (role === 'admin' && req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Only owners can add admins' });
+  }
+
+  if (!['admin', 'pupil'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await db('users').insert({ username, password: hashedPassword, role });
+    res.status(201).json({ message: `User ${username} added as ${role}` });
+  } catch (err) {
+    res.status(400).json({ error: 'Username already exists' });
+  }
+});
+
+// Serve frontend in production
+const path = require('path');
+app.use(express.static(path.join(__dirname, 'client/build')));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+});
+
+// Ensure app listens on 0.0.0.0 for Railway
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));

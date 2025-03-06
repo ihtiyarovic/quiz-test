@@ -4,39 +4,49 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const fs = require('fs'); // Added for CA certificate
 
 dotenv.config();
+
+// Load the CA certificate (save to ca-certificate.crt in your project)
+const caCertificate = fs.readFileSync('./ca-certificate.crt').toString();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Configure knex with Railway PostgreSQL details
+// Configure knex with Aiven PostgreSQL details
 const db = knex({
   client: 'pg',
   connection: {
-    connectionString: process.env.DATABASE_URL, // Railway provides this automatically
+    connectionString: process.env.DATABASE_URL || 'postgres://avnadmin:AVNS_94C8Y47XDBR0rdeJZa@pg-37afeea-hasanojabdurashulov309-a86c.aivencloud.com:15915/defaultdb?sslmode=require',
     ssl: {
-      rejectUnauthorized: false, // Railway handles SSL; disable strict checking for simplicity
+      rejectUnauthorized: true,
+      ca: caCertificate,
     },
   },
 });
 
-// Debug log to verify the DATABASE_URL
-console.log('DATABASE_URL:', process.env.DATABASE_URL);
+// Debug logs to verify the DATABASE_URL
+console.log('Raw DATABASE_URL:', process.env.DATABASE_URL);
+const parsedUrl = url.parse(process.env.DATABASE_URL || '');
+console.log('Parsed URL:', {
+  protocol: parsedUrl.protocol,
+  hostname: parsedUrl.hostname,
+  port: parsedUrl.port,
+  pathname: parsedUrl.pathname,
+});
 
 // Initialize database schema and create owner
 const initDb = async () => {
   try {
-    // Create users table
     await db.schema.createTableIfNotExists('users', (table) => {
-      table.increments('id').primary(); // serial in PostgreSQL
+      table.increments('id').primary();
       table.string('username', 150).unique().notNullable();
       table.string('password', 150).notNullable();
       table.string('role', 50).notNullable().defaultTo('pupil');
     });
 
-    // Create questions table
     await db.schema.createTableIfNotExists('questions', (table) => {
       table.increments('id').primary();
       table.string('text', 500).notNullable();
@@ -47,7 +57,6 @@ const initDb = async () => {
       table.string('correct_answer', 1).notNullable();
     });
 
-    // Create answers table
     await db.schema.createTableIfNotExists('answers', (table) => {
       table.increments('id').primary();
       table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE');
@@ -56,7 +65,6 @@ const initDb = async () => {
       table.timestamp('timestamp').defaultTo(db.fn.now());
     });
 
-    // Seed the owner user if not exists
     const owner = await db('users').where({ username: 'xasan' }).first();
     if (!owner) {
       const hashedPassword = await bcrypt.hash('+998770816393', 10);
@@ -73,6 +81,16 @@ const initDb = async () => {
 };
 
 initDb();
+
+// Test connection on startup
+(async () => {
+  try {
+    const version = await db.raw('SELECT VERSION()');
+    console.log('Database connection successful. Version:', version.rows[0].version);
+  } catch (err) {
+    console.error('Database connection error:', err);
+  }
+})();
 
 // Middleware for authentication
 const authenticate = (req, res, next) => {
@@ -277,6 +295,6 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
 });
 
-// Ensure app listens on 0.0.0.0 for Railway
+// Ensure app listens on 0.0.0.0 for Railway or other platforms
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));

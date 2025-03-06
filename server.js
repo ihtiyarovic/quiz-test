@@ -4,7 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const url = require('url'); // Added for parsing DATABASE_URL
+const url = require('url');
 
 dotenv.config();
 
@@ -16,31 +16,27 @@ app.use(cors());
 const db = knex({
   client: 'pg',
   connection: {
-    connectionString: process.env.DATABASE_URL, // Railway provides this automatically
-    ssl: {
-      rejectUnauthorized: false, // Railway handles SSL; disable strict checking for simplicity
-    },
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
   },
 });
 
-// Debug logs to verify the DATABASE_URL
+// Debug logs
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('Parsed Connection:', url.parse(process.env.DATABASE_URL || ''));
 
 // Initialize database schema and create owner
 const initDb = async () => {
   try {
-    // Create users table
     const usersTableExists = await db.schema.hasTable('users');
     if (!usersTableExists) {
       await db.schema.createTable('users', (table) => {
-        table.increments('id').primary(); // serial in PostgreSQL
+        table.increments('id').primary();
         table.string('username', 150).unique().notNullable();
         table.string('password', 150).notNullable();
         table.string('role', 50).notNullable().defaultTo('pupil');
       });
     } else {
-      // Ensure the unique constraint exists on username
       const constraints = await db('information_schema.table_constraints')
         .where({
           table_name: 'users',
@@ -48,7 +44,6 @@ const initDb = async () => {
           constraint_name: 'users_username_unique',
         })
         .first();
-
       if (!constraints) {
         await db.schema.alterTable('users', (table) => {
           table.unique('username', 'users_username_unique');
@@ -56,7 +51,6 @@ const initDb = async () => {
       }
     }
 
-    // Create questions table
     await db.schema.createTableIfNotExists('questions', (table) => {
       table.increments('id').primary();
       table.string('text', 500).notNullable();
@@ -67,7 +61,6 @@ const initDb = async () => {
       table.string('correct_answer', 1).notNullable();
     });
 
-    // Create answers table with check for existing foreign key constraints
     const answersTableExists = await db.schema.hasTable('answers');
     if (!answersTableExists) {
       await db.schema.createTable('answers', (table) => {
@@ -78,7 +71,6 @@ const initDb = async () => {
         table.timestamp('timestamp').defaultTo(db.fn.now());
       });
     } else {
-      // Check if the user_id foreign key constraint exists
       const userForeignKeys = await db('information_schema.table_constraints')
         .where({
           table_name: 'answers',
@@ -86,14 +78,12 @@ const initDb = async () => {
           constraint_name: 'answers_user_id_foreign',
         })
         .first();
-
       if (!userForeignKeys) {
         await db.schema.alterTable('answers', (table) => {
           table.foreign('user_id').references('id').inTable('users').onDelete('CASCADE');
         });
       }
 
-      // Check if the question_id foreign key constraint exists
       const questionForeignKeys = await db('information_schema.table_constraints')
         .where({
           table_name: 'answers',
@@ -101,7 +91,6 @@ const initDb = async () => {
           constraint_name: 'answers_question_id_foreign',
         })
         .first();
-
       if (!questionForeignKeys) {
         await db.schema.alterTable('answers', (table) => {
           table.foreign('question_id').references('id').inTable('questions').onDelete('CASCADE');
@@ -109,7 +98,6 @@ const initDb = async () => {
       }
     }
 
-    // Seed the owner user if not exists
     const owner = await db('users').where({ username: 'xasan' }).first();
     if (!owner) {
       const hashedPassword = await bcrypt.hash('+998770816393', 10);
@@ -144,6 +132,7 @@ const authenticate = (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     req.user = decoded;
+    console.log('Authenticated user:', req.user); // Debug log
     next();
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' });
@@ -161,6 +150,9 @@ const requireRole = (roles) => (req, res, next) => {
 // **Authentication Routes**
 app.post('/register', async (req, res) => {
   const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
   if (username === 'xasan') {
     return res.status(400).json({ error: 'Username "xasan" is reserved for the owner.' });
   }
@@ -169,7 +161,12 @@ app.post('/register', async (req, res) => {
     await db('users').insert({ username, password: hashedPassword, role: 'pupil' });
     res.status(201).json({ message: 'User registered as pupil' });
   } catch (err) {
-    res.status(400).json({ error: 'Username already exists' });
+    console.error('Error registering user:', err); // Log the error
+    if (err.code === '23505') { // Unique violation
+      res.status(400).json({ error: 'Username already exists' });
+    } else {
+      res.status(500).json({ error: 'Failed to add user', details: err.message });
+    }
   }
 });
 
@@ -196,6 +193,12 @@ app.get('/questions', authenticate, async (req, res) => {
 
 app.post('/questions', authenticate, requireRole(['owner', 'admin']), async (req, res) => {
   const { text, option_a, option_b, option_c, option_d, correct_answer } = req.body;
+  if (!text || !option_a || !option_b || !option_c || !option_d || !correct_answer) {
+    return res.status(400).json({ error: 'All fields (text, options a-d, correct_answer) are required' });
+  }
+  if (!['a', 'b', 'c', 'd'].includes(correct_answer)) {
+    return res.status(400).json({ error: 'correct_answer must be one of a, b, c, or d' });
+  }
   try {
     await db('questions').insert({
       text,
@@ -207,7 +210,8 @@ app.post('/questions', authenticate, requireRole(['owner', 'admin']), async (req
     });
     res.status(201).json({ message: 'Question added' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to add question' });
+    console.error('Error adding question:', err); // Log the error
+    res.status(500).json({ error: 'Failed to add question', details: err.message });
   }
 });
 
@@ -225,7 +229,8 @@ app.put('/questions/:id', authenticate, requireRole(['owner', 'admin']), async (
     });
     res.json({ message: 'Question updated' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update question' });
+    console.error('Error updating question:', err);
+    res.status(500).json({ error: 'Failed to update question', details: err.message });
   }
 });
 
@@ -235,13 +240,17 @@ app.delete('/questions/:id', authenticate, requireRole(['owner', 'admin']), asyn
     await db('questions').where({ id }).del();
     res.json({ message: 'Question deleted' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete question' });
+    console.error('Error deleting question:', err);
+    res.status(500).json({ error: 'Failed to delete question', details: err.message });
   }
 });
 
 // **Answer Route**
 app.post('/answers', authenticate, async (req, res) => {
   const { question_id, selected_option } = req.body;
+  if (!question_id || !selected_option) {
+    return res.status(400).json({ error: 'question_id and selected_option are required' });
+  }
   try {
     await db('answers').insert({
       user_id: req.user.id,
@@ -250,21 +259,32 @@ app.post('/answers', authenticate, async (req, res) => {
     });
     res.status(201).json({ message: 'Answer submitted' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to submit answer' });
+    console.error('Error submitting answer:', err);
+    res.status(500).json({ error: 'Failed to submit answer', details: err.message });
   }
 });
 
-// **User Management Routes (Owner only)**
-app.get('/users', authenticate, requireRole(['owner']), async (req, res) => {
-  const users = await db('users').select('id', 'username', 'role');
-  res.json(users);
+// **User Management Routes**
+app.get('/users', authenticate, requireRole(['owner', 'admin']), async (req, res) => {
+  try {
+    const users = await db('users').select('id', 'username', 'role');
+    res.json(users);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Failed to fetch users', details: err.message });
+  }
 });
 
 app.put('/users/:id/role', authenticate, requireRole(['owner']), async (req, res) => {
   const { role } = req.body;
   if (['owner', 'admin', 'pupil'].includes(role)) {
-    await db('users').where({ id: req.params.id }).update({ role });
-    res.json({ message: 'Role updated' });
+    try {
+      await db('users').where({ id: req.params.id }).update({ role });
+      res.json({ message: 'Role updated' });
+    } catch (err) {
+      console.error('Error updating role:', err);
+      res.status(500).json({ error: 'Failed to update role', details: err.message });
+    }
   } else {
     res.status(400).json({ error: 'Invalid role' });
   }
@@ -275,7 +295,33 @@ app.delete('/users/:id', authenticate, requireRole(['owner', 'admin']), async (r
     await db('users').where({ id: req.params.id }).del();
     res.json({ message: 'User deleted' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete user' });
+    console.error('Error deleting user:', err);
+    res.status(500).json({ error: 'Failed to delete user', details: err.message });
+  }
+});
+
+app.post('/users', authenticate, async (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) {
+    return res.status(400).json({ error: 'Username, password, and role are required' });
+  }
+  if (role === 'admin' && req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Only owners can add admins' });
+  }
+  if (!['admin', 'pupil'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+  const hashedPassword = await bcrypt.hash(password, 10);
+  try {
+    await db('users').insert({ username, password: hashedPassword, role });
+    res.status(201).json({ message: `User ${username} added as ${role}` });
+  } catch (err) {
+    console.error('Error adding user:', err);
+    if (err.code === '23505') { // Unique violation
+      res.status(400).json({ error: 'Username already exists' });
+    } else {
+      res.status(500).json({ error: 'Failed to add user', details: err.message });
+    }
   }
 });
 
@@ -309,27 +355,8 @@ app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), a
       res.json({ totalPupils, totalTeachers, pupilStatistics });
     }
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch statistics' });
-  }
-});
-
-app.post('/users', authenticate, async (req, res) => {
-  const { username, password, role } = req.body;
-
-  if (role === 'admin' && req.user.role !== 'owner') {
-    return res.status(403).json({ error: 'Only owners can add admins' });
-  }
-
-  if (!['admin', 'pupil'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await db('users').insert({ username, password: hashedPassword, role });
-    res.status(201).json({ message: `User ${username} added as ${role}` });
-  } catch (err) {
-    res.status(400).json({ error: 'Username already exists' });
+    console.error('Error fetching statistics:', err);
+    res.status(500).json({ error: 'Failed to fetch statistics', details: err.message });
   }
 });
 

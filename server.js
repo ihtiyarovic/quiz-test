@@ -7,61 +7,72 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-const isProduction = process.env.NODE_ENV === 'production';
-
+// Configure knex with Railway PostgreSQL details
 const db = knex({
-  client: isProduction ? 'pg' : 'sqlite3',
-  connection: isProduction
-    ? process.env.DATABASE_URL
-    : { filename: './database.sqlite' },
-  useNullAsDefault: true,
+  client: 'pg',
+  connection: {
+    connectionString: process.env.DATABASE_URL, // Railway provides this automatically
+    ssl: {
+      rejectUnauthorized: false, // Railway handles SSL; disable strict checking for simplicity (adjust for production)
+    },
+  },
 });
+
+// Debug log to verify the DATABASE_URL
+console.log('DATABASE_URL:', process.env.DATABASE_URL);
 
 // Initialize database schema and create owner
 const initDb = async () => {
-  await db.schema.createTableIfNotExists('users', (table) => {
-    table.increments('id').primary();
-    table.string('username', 150).unique().notNullable();
-    table.string('password', 150).notNullable();
-    table.string('role', 50).notNullable().defaultTo('pupil');
-  });
-
-  await db.schema.createTableIfNotExists('questions', (table) => {
-    table.increments('id').primary();
-    table.string('text', 500).notNullable();
-    table.string('option_a', 150).notNullable();
-    table.string('option_b', 150).notNullable();
-    table.string('option_c', 150).notNullable();
-    table.string('option_d', 150).notNullable();
-    table.string('correct_answer', 1).notNullable();
-  });
-
-  await db.schema.createTableIfNotExists('answers', (table) => {
-    table.increments('id').primary();
-    table.integer('user_id').unsigned().references('users.id');
-    table.integer('question_id').unsigned().references('questions.id');
-    table.string('selected_option', 1).notNullable();
-    table.timestamp('timestamp').defaultTo(db.fn.now());
-  });
-
-  const owner = await db('users').where({ username: 'xasan' }).first();
-  if (!owner) {
-    const hashedPassword = await bcrypt.hash('+998770816393', 10);
-    await db('users').insert({
-      username: 'xasan',
-      password: hashedPassword,
-      role: 'owner',
+  try {
+    // Create users table
+    await db.schema.createTableIfNotExists('users', (table) => {
+      table.increments('id').primary(); // serial in PostgreSQL
+      table.string('username', 150).unique().notNullable();
+      table.string('password', 150).notNullable();
+      table.string('role', 50).notNullable().defaultTo('pupil');
     });
-    console.log('Owner "xasan" created successfully.');
+
+    // Create questions table
+    await db.schema.createTableIfNotExists('questions', (table) => {
+      table.increments('id').primary();
+      table.string('text', 500).notNullable();
+      table.string('option_a', 150).notNullable();
+      table.string('option_b', 150).notNullable();
+      table.string('option_c', 150).notNullable();
+      table.string('option_d', 150).notNullable();
+      table.string('correct_answer', 1).notNullable();
+    });
+
+    // Create answers table
+    await db.schema.createTableIfNotExists('answers', (table) => {
+      table.increments('id').primary();
+      table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE');
+      table.integer('question_id').unsigned().references('id').inTable('questions').onDelete('CASCADE');
+      table.string('selected_option', 1).notNullable();
+      table.timestamp('timestamp').defaultTo(db.fn.now());
+    });
+
+    // Seed the owner user if not exists
+    const owner = await db('users').where({ username: 'xasan' }).first();
+    if (!owner) {
+      const hashedPassword = await bcrypt.hash('+998770816393', 10);
+      await db('users').insert({
+        username: 'xasan',
+        password: hashedPassword,
+        role: 'owner',
+      });
+      console.log('Owner "xasan" created successfully.');
+    }
+  } catch (err) {
+    console.error('DB Error:', err);
   }
 };
 
-initDb().catch((err) => console.error('DB Error:', err));
+initDb();
 
 // Middleware for authentication
 const authenticate = (req, res, next) => {
@@ -196,19 +207,14 @@ app.put('/users/:id/role', authenticate, requireRole(['owner']), async (req, res
   }
 });
 
-app.delete(
-  '/users/:id',
-  authenticate,
-  requireRole(['owner', 'admin']), // Updated to allow both owners and admins
-  async (req, res) => {
-    try {
-      await db('users').where({ id: req.params.id }).del();
-      res.json({ message: 'User deleted' });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to delete user' });
-    }
+app.delete('/users/:id', authenticate, requireRole(['owner', 'admin']), async (req, res) => {
+  try {
+    await db('users').where({ id: req.params.id }).del();
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete user' });
   }
-);
+});
 
 // **Statistics Route**
 app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), async (req, res) => {
@@ -226,54 +232,4 @@ app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), a
           .where({ 'answers.user_id': pupil.id })
           .select('answers.selected_option', 'questions.correct_answer');
         const correctAnswers = answers.filter(
-          (ans) => ans.selected_option === ans.correct_answer
-        ).length;
-        const incorrectAnswers = answers.length - correctAnswers;
-        return { id: pupil.id, username: pupil.username, correctAnswers, incorrectAnswers };
-      })
-    );
-
-    if (req.user.role === 'pupil') {
-      const pupilStats = pupilStatistics.find(stat => stat.username === req.user.username) || { correctAnswers: 0, incorrectAnswers: 0 };
-      res.json({ totalPupils: 1, totalTeachers: 0, pupilStatistics: [pupilStats] });
-    } else {
-      res.json({ totalPupils, totalTeachers, pupilStatistics });
-    }
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch statistics' });
-  }
-});
-
-app.post('/users', authenticate, async (req, res) => {
-  const { username, password, role } = req.body;
-
-  // Restrict admin creation to owners only
-  if (role === 'admin' && req.user.role !== 'owner') {
-    return res.status(403).json({ error: 'Only owners can add admins' });
-  }
-
-  // Validate role
-  if (!['admin', 'pupil'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await db('users').insert({ username, password: hashedPassword, role });
-    res.status(201).json({ message: `User ${username} added as ${role}` });
-  } catch (err) {
-    res.status(400).json({ error: 'Username already exists' });
-  }
-});
-
-// Serve frontend in production
-if (isProduction) {
-  const path = require('path');
-  app.use(express.static(path.join(__dirname, 'client/build')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
-  });
-}
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+          (ans

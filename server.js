@@ -4,7 +4,8 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const fs = require('fs'); // Added for CA certificate
+const fs = require('fs'); // For CA certificate
+const url = require('url'); // Added to parse DATABASE_URL
 
 dotenv.config();
 

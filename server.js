@@ -4,7 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const url = require('url');
+const url = require('url'); // Added for parsing DATABASE_URL
 
 dotenv.config();
 
@@ -30,10 +30,9 @@ console.log('Parsed Connection:', url.parse(process.env.DATABASE_URL || ''));
 // Initialize database schema and create owner
 const initDb = async () => {
   try {
-    // Check if users table exists and has the unique constraint
-    const tableExists = await db.schema.hasTable('users');
-    if (!tableExists) {
-      // Create users table only if it doesn't exist
+    // Create users table
+    const usersTableExists = await db.schema.hasTable('users');
+    if (!usersTableExists) {
       await db.schema.createTable('users', (table) => {
         table.increments('id').primary(); // serial in PostgreSQL
         table.string('username', 150).unique().notNullable();
@@ -68,14 +67,47 @@ const initDb = async () => {
       table.string('correct_answer', 1).notNullable();
     });
 
-    // Create answers table
-    await db.schema.createTableIfNotExists('answers', (table) => {
-      table.increments('id').primary();
-      table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE');
-      table.integer('question_id').unsigned().references('id').inTable('questions').onDelete('CASCADE');
-      table.string('selected_option', 1).notNullable();
-      table.timestamp('timestamp').defaultTo(db.fn.now());
-    });
+    // Create answers table with check for existing foreign key constraints
+    const answersTableExists = await db.schema.hasTable('answers');
+    if (!answersTableExists) {
+      await db.schema.createTable('answers', (table) => {
+        table.increments('id').primary();
+        table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE');
+        table.integer('question_id').unsigned().references('id').inTable('questions').onDelete('CASCADE');
+        table.string('selected_option', 1).notNullable();
+        table.timestamp('timestamp').defaultTo(db.fn.now());
+      });
+    } else {
+      // Check if the user_id foreign key constraint exists
+      const userForeignKeys = await db('information_schema.table_constraints')
+        .where({
+          table_name: 'answers',
+          constraint_type: 'FOREIGN KEY',
+          constraint_name: 'answers_user_id_foreign',
+        })
+        .first();
+
+      if (!userForeignKeys) {
+        await db.schema.alterTable('answers', (table) => {
+          table.foreign('user_id').references('id').inTable('users').onDelete('CASCADE');
+        });
+      }
+
+      // Check if the question_id foreign key constraint exists
+      const questionForeignKeys = await db('information_schema.table_constraints')
+        .where({
+          table_name: 'answers',
+          constraint_type: 'FOREIGN KEY',
+          constraint_name: 'answers_question_id_foreign',
+        })
+        .first();
+
+      if (!questionForeignKeys) {
+        await db.schema.alterTable('answers', (table) => {
+          table.foreign('question_id').references('id').inTable('questions').onDelete('CASCADE');
+        });
+      }
+    }
 
     // Seed the owner user if not exists
     const owner = await db('users').where({ username: 'xasan' }).first();
@@ -247,26 +279,6 @@ app.delete('/users/:id', authenticate, requireRole(['owner', 'admin']), async (r
   }
 });
 
-app.post('/users', authenticate, async (req, res) => {
-  const { username, password, role } = req.body;
-
-  if (role === 'admin' && req.user.role !== 'owner') {
-    return res.status(403).json({ error: 'Only owners can add admins' });
-  }
-
-  if (!['admin', 'pupil'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await db('users').insert({ username, password: hashedPassword, role });
-    res.status(201).json({ message: `User ${username} added as ${role}` });
-  } catch (err) {
-    res.status(400).json({ error: 'Username already exists' });
-  }
-});
-
 // **Statistics Route**
 app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), async (req, res) => {
   try {
@@ -298,6 +310,26 @@ app.get('/statistics', authenticate, requireRole(['owner', 'admin', 'pupil']), a
     }
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+app.post('/users', authenticate, async (req, res) => {
+  const { username, password, role } = req.body;
+
+  if (role === 'admin' && req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Only owners can add admins' });
+  }
+
+  if (!['admin', 'pupil'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await db('users').insert({ username, password: hashedPassword, role });
+    res.status(201).json({ message: `User ${username} added as ${role}` });
+  } catch (err) {
+    res.status(400).json({ error: 'Username already exists' });
   }
 });
 
